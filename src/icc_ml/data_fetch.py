@@ -221,5 +221,20 @@ def _standardize_schema(df: pd.DataFrame, start: datetime, end: datetime) -> pd.
     for col in ["open", "high", "low", "close", "volume"]:
         if col in df.columns:
             df[col] = df[col].astype(float)
-    
+
     return df
+
+
+def load_mt5_export(path: str) -> pd.DataFrame:
+    """
+    Load a MetaTrader 5 History Center export (tab-separated, <DATE> <TIME> ... columns).
+
+    Returns time, open, high, low, close, volume (tick volume) and spread (points),
+    sorted by time with a 0-based index.
+    """
+    df = pd.read_csv(path, sep="\t")
+    df.columns = [c.strip().strip("<>").lower() for c in df.columns]
+    df["time"] = pd.to_datetime(df["date"] + " " + df["time"], format="%Y.%m.%d %H:%M:%S")
+    df = df.rename(columns={"tickvol": "volume"})
+    cols = ["time", "open", "high", "low", "close", "volume"] + (["spread"] if "spread" in df.columns else [])
+    return df[cols].sort_values("time").reset_index(drop=True)

@@ -38,8 +38,30 @@ input int      MaxSpreadPoints     = 0;      // 0 = no spread filter, else max a
 input ulong    MagicNumber         = 774411; // EA identifier
 input string   TradeComment        = "ICC_Swing_EA";
 
-input group "=== Take Profit (fixed pips) ==="
-input double   TP_Pips             = 2500;   // Take profit distance from entry, in pips
+enum ENUM_TP_MODE
+{
+   TP_FIXED_PIPS = 0,   // Fixed pips (TP_Pips)
+   TP_R_MULTIPLE = 1,   // Multiple of the entry-to-SL distance (TP_RMultiple)
+   TP_ATR        = 2    // Multiple of ATR on the signal bar (TP_ATRMult)
+};
+
+enum ENUM_TREND_FILTER
+{
+   TREND_NONE = 0,      // No trend filter
+   TREND_EMA  = 1       // Longs only above EMA, shorts only below
+};
+
+input group "=== Take Profit ==="
+input ENUM_TP_MODE TP_Mode         = TP_FIXED_PIPS; // How the take profit distance is set
+input double   TP_Pips             = 2500;   // Take profit distance from entry, in pips (TP_FIXED_PIPS)
+input double   TP_RMultiple        = 1.5;    // TP = this x entry-to-SL distance (TP_R_MULTIPLE)
+input double   TP_ATRMult          = 4.0;    // TP = this x ATR(ATR_Period) on the signal bar (TP_ATR)
+input int      ATR_Period          = 14;     // ATR period for TP_ATR and MaxSL_ATR
+
+input group "=== Entry Filters ==="
+input ENUM_TREND_FILTER TrendFilter = TREND_NONE; // Trend filter evaluated on the signal bar's close
+input int      TrendEMAPeriod      = 200;    // EMA period for TREND_EMA (chart timeframe, close prices)
+input double   MaxSL_ATR           = 0;      // Skip signals whose entry-to-SL distance exceeds this x ATR (0 = off)
 // NOTE ON PIP CONVENTION: PipSize() below returns 10*_Point on 3/5-digit quotes
 // and 1*_Point on 2/4-digit quotes. So 2500 "pips" means very different things
 // per symbol:
@@ -94,6 +116,20 @@ datetime lastProcessedBarTime = 0;
 bool     trade_active   = false;
 ulong    trade_ticket   = 0;
 int      trade_dir      = 0;     // 1 = long, -1 = short
+
+// --- indicator handles (created only when an input needs them) ---
+int      atrHandle      = INVALID_HANDLE;
+int      emaHandle      = INVALID_HANDLE;
+
+// Value of an indicator buffer on the bar that just closed (shift 1)
+bool ClosedBarValue(int handle, double &value)
+{
+   if(handle == INVALID_HANDLE) return false;
+   double buf[];
+   if(CopyBuffer(handle, 0, 1, 1, buf) != 1) return false;
+   value = buf[0];
+   return true;
+}
 
 //====================================================================
 // 3. PIVOT DETECTION
@@ -352,13 +388,15 @@ void UpdateVisuals()
 //====================================================================
 // 7. TRADE EXECUTION
 //====================================================================
-void OpenTrade(ENUM_ORDER_TYPE type, double slPrice)
+void OpenTrade(ENUM_ORDER_TYPE type, double slPrice, double atrValue)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double entryPrice = (type == ORDER_TYPE_BUY) ? ask : bid;
 
    double dist = PipsToPrice(TP_Pips);
+   if(TP_Mode == TP_R_MULTIPLE) dist = TP_RMultiple * MathAbs(entryPrice - slPrice);
+   if(TP_Mode == TP_ATR)        dist = TP_ATRMult * atrValue;
    double tpPrice = (type == ORDER_TYPE_BUY) ? entryPrice + dist : entryPrice - dist;
 
    if(type == ORDER_TYPE_BUY)
@@ -391,6 +429,30 @@ void OpenTrade(ENUM_ORDER_TYPE type, double slPrice)
    trade_active = true;
    trade_ticket  = posId;
    trade_dir     = (type == ORDER_TYPE_BUY) ? 1 : -1;
+}
+
+//====================================================================
+// 7b. ENTRY FILTERS (all off by default)
+//     Evaluated on the bar that just closed. atrValue is returned for
+//     TP_ATR. A rejected signal resets the state machine exactly like a
+//     signal whose SL could not be resolved.
+//====================================================================
+bool PassesEntryFilters(int dir, double closeSignalBar, double slPrice, double &atrValue)
+{
+   atrValue = 0.0;
+   bool needAtr = (TP_Mode == TP_ATR) || (MaxSL_ATR > 0);
+   if(needAtr && !ClosedBarValue(atrHandle, atrValue)) return false;
+
+   if(TrendFilter == TREND_EMA)
+   {
+      double ema;
+      if(!ClosedBarValue(emaHandle, ema)) return false;
+      if(!(dir * (closeSignalBar - ema) > 0)) return false;
+   }
+
+   if(MaxSL_ATR > 0 && MathAbs(closeSignalBar - slPrice) > MaxSL_ATR * atrValue) return false;
+
+   return true;
 }
 
 //====================================================================
@@ -522,10 +584,11 @@ void ProcessNewBar()
    if(long_cond && (!OnePositionAtATime || !blocked))
    {
       double entryEstimate = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-      double finalSL;
-      if(SpreadOk() && ResolveSwingSL(ORDER_TYPE_BUY, entryEstimate, sl_level, iTime(_Symbol,_Period,1), finalSL))
+      double finalSL, atrValue;
+      if(SpreadOk() && ResolveSwingSL(ORDER_TYPE_BUY, entryEstimate, sl_level, iTime(_Symbol,_Period,1), finalSL)
+         && PassesEntryFilters(1, closeThisBar, finalSL, atrValue))
       {
-         OpenTrade(ORDER_TYPE_BUY, finalSL);
+         OpenTrade(ORDER_TYPE_BUY, finalSL, atrValue);
       }
       stage = 0;
       hasSlLevel = false;
@@ -533,10 +596,11 @@ void ProcessNewBar()
    else if(short_cond && (!OnePositionAtATime || !blocked))
    {
       double entryEstimate = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      double finalSL;
-      if(SpreadOk() && ResolveSwingSL(ORDER_TYPE_SELL, entryEstimate, sl_level, iTime(_Symbol,_Period,1), finalSL))
+      double finalSL, atrValue;
+      if(SpreadOk() && ResolveSwingSL(ORDER_TYPE_SELL, entryEstimate, sl_level, iTime(_Symbol,_Period,1), finalSL)
+         && PassesEntryFilters(-1, closeThisBar, finalSL, atrValue))
       {
-         OpenTrade(ORDER_TYPE_SELL, finalSL);
+         OpenTrade(ORDER_TYPE_SELL, finalSL, atrValue);
       }
       stage = 0;
       hasSlLevel = false;
@@ -580,12 +644,44 @@ int OnInit()
                "as or wider than the chart timeframe (e.g. H4/D1 stops on an H1 chart).");
    }
 
+   if(TP_Mode == TP_R_MULTIPLE && TP_RMultiple <= 0)
+   {
+      Print("TP_RMultiple must be > 0");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(TP_Mode == TP_ATR && TP_ATRMult <= 0)
+   {
+      Print("TP_ATRMult must be > 0");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(TP_Mode == TP_ATR || MaxSL_ATR > 0)
+   {
+      atrHandle = iATR(_Symbol, _Period, ATR_Period);
+      if(atrHandle == INVALID_HANDLE)
+      {
+         Print("ICC_Swing_EA: failed to create ATR handle");
+         return(INIT_FAILED);
+      }
+   }
+   if(TrendFilter == TREND_EMA)
+   {
+      emaHandle = iMA(_Symbol, _Period, TrendEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if(emaHandle == INVALID_HANDLE)
+      {
+         Print("ICC_Swing_EA: failed to create EMA handle");
+         return(INIT_FAILED);
+      }
+   }
+
    lastProcessedBarTime = 0;
    return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
+   if(atrHandle != INVALID_HANDLE) IndicatorRelease(atrHandle);
+   if(emaHandle != INVALID_HANDLE) IndicatorRelease(emaHandle);
+
    if(ShowChartObjects)
    {
       ObjectDelete(0, "ICC_HTF_Res");

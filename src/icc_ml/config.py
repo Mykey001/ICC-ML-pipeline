@@ -117,7 +117,19 @@ class StrategyConfig:
     require_custom_swing_sl: bool = False  # RequireCustomSwingSL
     one_position_at_a_time: bool = True  # OnePositionAtATime
     fixed_lots: float = 0.10  # FixedLots
-    
+
+    # Take-profit mode (TP_Mode). "fixed_pips" uses tp_pips; "r_multiple" places TP
+    # at tp_r_multiple x the entry-to-SL distance; "atr" at tp_atr_mult x ATR.
+    tp_mode: Literal["fixed_pips", "r_multiple", "atr"] = "fixed_pips"  # TP_Mode
+    tp_r_multiple: float = 1.5  # TP_RMultiple
+    tp_atr_mult: float = 4.0  # TP_ATRMult
+    atr_period: int = 14  # ATR_Period (MT5 iATR: simple average of true range)
+
+    # Entry filters, evaluated on the signal bar (0 / "none" = off)
+    trend_filter: Literal["none", "ema"] = "none"  # TrendFilter
+    trend_ema_period: int = 200  # TrendEMAPeriod: longs only above, shorts only below
+    max_sl_atr: float = 0.0  # MaxSL_ATR: skip if entry-to-SL distance > this x ATR
+
     # Timeout for stuck trades
     max_hold_bars: int = 2000  # Prevents infinite hangs in labeling
 

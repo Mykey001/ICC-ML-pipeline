@@ -11,24 +11,50 @@ processed as the EA processes "the bar that just closed" (shift 1). Section numb
 in comments refer to the EA source.
 
 Known, intentional differences from the EA:
-- Position blocking (OnePositionAtATime) is not applied here; every setup is emitted.
-  While blocked, the EA leaves the stage untouched, so a blocked setup can fire again
-  on a later bar. Apply blocking downstream when simulating one account.
+- Position blocking (OnePositionAtATime) is only applied when an `on_signal`
+  callback reports how long each position stays open; otherwise every setup is
+  emitted. While blocked, the EA leaves the stage untouched, so a blocked setup can
+  fire again on a later bar - the callback path reproduces that.
 - The EA validates the SL against the live ask/bid on the first tick of the next bar.
   That price is unknown at signal time, so the signal bar's close is used instead.
 """
 
 from __future__ import annotations
+from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
 from .config import StrategyConfig, SymbolSpec
 
 
+def mt5_atr(df: pd.DataFrame, period: int) -> np.ndarray:
+    """ATR as MT5's iATR computes it: simple average of the true range."""
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    prev_close = np.r_[np.nan, df["close"].to_numpy(dtype=float)[:-1]]
+    tr = np.fmax(high - low, np.fmax(np.abs(high - prev_close), np.abs(low - prev_close)))
+    return pd.Series(tr).rolling(period).mean().to_numpy()
+
+
+def mt5_ema(close: pd.Series, period: int) -> np.ndarray:
+    """EMA as MT5's iMA(MODE_EMA) computes it: alpha = 2 / (period + 1), seeded with the first close."""
+    return close.ewm(span=period, adjust=False).mean().to_numpy()
+
+
+def tp_distance(cfg: StrategyConfig, spec: SymbolSpec, entry: float, sl: float, atr: float) -> float:
+    """Take-profit distance from entry (price units) for the configured TP_Mode."""
+    if cfg.tp_mode == "r_multiple":
+        return cfg.tp_r_multiple * abs(entry - sl)
+    if cfg.tp_mode == "atr":
+        return cfg.tp_atr_mult * atr
+    return spec.pips_to_price(cfg.tp_pips)
+
+
 def generate_icc_signals(
     df: pd.DataFrame,
     cfg: StrategyConfig,
     spec: SymbolSpec,
+    on_signal: Optional[Callable[[int, int, float, float], Optional[int]]] = None,
 ) -> pd.DataFrame:
     """
     Generate ICC strategy signals using the state machine.
@@ -37,13 +63,19 @@ def generate_icc_signals(
         df: OHLCV DataFrame
         cfg: Strategy configuration
         spec: Symbol specification
+        on_signal: Optional callback(bar, direction, sl_price, atr) called for each
+            signal; returns the bar on which the resulting position closes, or None
+            if no position was opened. When given and cfg.one_position_at_a_time is
+            set, setups that trigger while a position is open are ignored without
+            resetting the state machine, as the EA does.
 
     Returns:
         DataFrame with columns:
         - signal: 1 (long), -1 (short), 0 (no signal)
         - signal_bar: Index where signal occurred
         - sl_price: Stop loss price
-        - tp_price: Take profit price
+        - tp_price: Take profit price (estimated from the signal bar's close)
+        - atr: ATR on the signal bar
         - stage: State machine stage after processing the bar
     """
     df = df.copy().reset_index(drop=True)
@@ -53,9 +85,14 @@ def generate_icc_signals(
     signal_bar = np.full(n, -1, dtype=int)
     sl_out = np.full(n, np.nan)
     tp_out = np.full(n, np.nan)
+    atr_out = np.full(n, np.nan)
     stage_out = np.zeros(n, dtype=int)
 
     close = df["close"].to_numpy(dtype=float)
+    atr = mt5_atr(df, cfg.atr_period)
+    ema = mt5_ema(df["close"], cfg.trend_ema_period) if cfg.trend_filter == "ema" else None
+    use_blocking = on_signal is not None and cfg.one_position_at_a_time
+    blocked_until = -1  # bars before this still have an open position
 
     # Pivot prices placed on the bar where they confirm (NaN elsewhere)
     htf = _detect_pivots(df, cfg.htf_pivot_len)
@@ -136,18 +173,32 @@ def generate_icc_signals(
         long_cond = stage == 2 and ready and cl_prev < trigger_zone_prev and cl > trigger_zone
         short_cond = stage == -2 and ready and cl_prev > trigger_zone_prev and cl < trigger_zone
 
-        if long_cond or short_cond:
+        # A setup that triggers while a position is open is ignored, state untouched
+        blocked = use_blocking and i < blocked_until
+        if (long_cond or short_cond) and not blocked:
             direction = 1 if long_cond else -1
             final_sl = _resolve_swing_sl(
                 direction, cl, sl_level, cfg, spec, swing,
                 bar_times[i] if bar_times is not None else None,
             )
             # OpenTrade() refuses an SL on the wrong side of entry
-            if not np.isnan(final_sl) and direction * (cl - final_sl) > 0:
+            ok = not np.isnan(final_sl) and direction * (cl - final_sl) > 0
+            if ok and cfg.trend_filter == "ema":
+                ok = direction * (cl - ema[i]) > 0
+            if ok and cfg.max_sl_atr > 0:
+                ok = not np.isnan(atr[i]) and abs(cl - final_sl) <= cfg.max_sl_atr * atr[i]
+            if ok and cfg.tp_mode == "atr":
+                ok = not np.isnan(atr[i])
+            if ok:
                 signal[i] = direction
                 signal_bar[i] = i
                 sl_out[i] = final_sl
-                tp_out[i] = cl + direction * spec.pips_to_price(cfg.tp_pips)
+                atr_out[i] = atr[i]
+                tp_out[i] = cl + direction * tp_distance(cfg, spec, cl, final_sl, atr[i])
+                if use_blocking:
+                    exit_bar = on_signal(i, direction, final_sl, atr[i])
+                    if exit_bar is not None:
+                        blocked_until = exit_bar
             # The EA resets even when no order is sent
             stage = 0
             sl_level = np.nan
@@ -159,6 +210,7 @@ def generate_icc_signals(
         "signal_bar": signal_bar,
         "sl_price": sl_out,
         "tp_price": tp_out,
+        "atr": atr_out,
         "stage": stage_out,
     }, index=df.index)
 

@@ -11,7 +11,7 @@ Key features:
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import List, Optional, Tuple
 import warnings
 
@@ -20,6 +20,9 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score, brier_score_loss
 import joblib
 
@@ -276,8 +279,9 @@ def build_model(model_type: str):
     
     Supported types:
     - HistGradientBoosting (default, handles missing values)
+    - HistGradientBoostingRegularized (shallower, more regularised)
     - RandomForest
-    - LogisticRegression
+    - LogisticRegression (median imputation + standardisation, L2 C=0.1)
     - LightGBM (if installed)
     - XGBoost (if installed)
     """
@@ -289,6 +293,17 @@ def build_model(model_type: str):
             random_state=42,
         )
     
+    elif model_type == "HistGradientBoostingRegularized":
+        # Shallower trees, slower learning and larger leaves: for small trade samples
+        return HistGradientBoostingClassifier(
+            max_iter=200,
+            learning_rate=0.05,
+            max_depth=3,
+            min_samples_leaf=40,
+            l2_regularization=1.0,
+            random_state=42,
+        )
+
     elif model_type == "RandomForest":
         return RandomForestClassifier(
             n_estimators=100,
@@ -298,9 +313,11 @@ def build_model(model_type: str):
         )
     
     elif model_type == "LogisticRegression":
-        return LogisticRegression(
-            max_iter=1000,
-            random_state=42,
+        # Features have very different scales; impute any NaN and standardise first
+        return make_pipeline(
+            SimpleImputer(strategy="median"),
+            StandardScaler(),
+            LogisticRegression(C=0.1, max_iter=2000, random_state=42),
         )
     
     elif model_type == "LightGBM":
@@ -436,6 +453,7 @@ def fit_final_model(
     out_path: Optional[str] = None,
     pip: Optional[float] = None,
     regime_cfg: Optional[RegimeConfig] = None,
+    strategy_cfg=None,
 ) -> dict:
     """
     Fit final model on ALL available data for deployment.
@@ -456,6 +474,8 @@ def fit_final_model(
         out_path: Path to save model (optional)
         pip: Pip size, for the regime profile's SL distance column
         regime_cfg: Regime configuration used to build the regime columns
+        strategy_cfg: StrategyConfig the training trades came from; stored so the
+            model is only ever run behind the same strategy settings
 
     Returns:
         Dict with model bundle metadata
@@ -472,6 +492,9 @@ def fit_final_model(
 
     if "regime" in df.columns:
         bundle["regime_config"] = regime_config_dict(regime_cfg or RegimeConfig())
+
+    if strategy_cfg is not None:
+        bundle["strategy_config"] = asdict(strategy_cfg)
         bundle["regime_profile"] = regime_profile(df, pip=pip)
 
     if out_path is not None:
