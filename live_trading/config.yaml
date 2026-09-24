@@ -1,0 +1,99 @@
+# Live Trading Configuration
+# Copy and customize for your setup
+
+# Model
+model:
+  path: "../../models/model_icc_meta.joblib"  # Path to trained model
+
+# Data source
+data:
+  source: mt5  # csv | mt5 | api
+  csv_path: "../data/raw/XAUUSDm_H1.csv"  # If using CSV
+  symbol: XAUUSDm
+  timeframe: H1
+  buffer_size: 2000  # Historical bars to maintain
+  
+  # MT5 connection settings
+  mt5_login: 0  # Your MT5 account number - CHANGE THIS!
+  mt5_password: ""  # Your MT5 password - CHANGE THIS!
+  mt5_server: ""  # Your broker server name (e.g., "MetaQuotes-Demo") - CHANGE THIS!
+
+# Symbol specification (must match training!)
+symbol_spec:
+  name: XAUUSDm
+  digits: 3
+  point: 0.001
+  contract_size: 100.0
+  typical_spread_points: 30.0
+  commission_per_lot_roundturn: 0.0  # SET THIS!
+
+# Strategy parameters (must match training!)
+strategy:
+  htf_pivot_len: 2
+  ltf_pivot_len: 1
+  tp_pips: 2500.0
+  use_custom_swing_sl: true
+  sl_swing_timeframe: "4h"
+  sl_swing_pivot_len: 2
+  sl_max_candidates: 20
+  sl_buffer_pips: 0.0
+  require_custom_swing_sl: false
+  one_position_at_a_time: true
+  fixed_lots: 0.10
+  max_hold_bars: 2000
+
+# Risk management
+risk:
+  max_positions: 1
+  max_lot_size: 1.0
+  min_lot_size: 0.01
+  default_lot_size: 0.10
+  
+  # Daily limits
+  max_daily_loss_usd: 500.0
+  max_daily_trades: 5
+  
+  # Overall limits
+  max_drawdown_pct: 15.0
+  
+  # Model confidence (optional extra filter beyond model threshold)
+  min_probability: null  # e.g., 0.60 for extra safety
+  
+  # Risk-reward
+  min_risk_reward_ratio: 1.5
+
+# Emergency stop
+emergency:
+  max_consecutive_losses: 5
+  max_daily_loss_pct: 10.0
+  max_loss_in_minutes_usd: 500.0
+  max_loss_in_minutes_time: 60
+
+# Execution
+execution:
+  dry_run: true  # Set false for live trading!
+  order_executor: demo  # demo | mt5 | custom
+  
+# Monitoring
+monitoring:
+  log_dir: "logs"
+  save_decisions: true
+  alert_on_issues: true
+  
+# Logging
+logging:
+  level: INFO  # DEBUG | INFO | WARNING | ERROR
+  console: true
+  file: true
+  file_path: "logs/trading.log"
+
+# Timing
+timing:
+  check_interval_seconds: 60  # How often to check for new bars
+  max_processing_time_seconds: 30  # Timeout for processing
+
+# Alerts (optional)
+alerts:
+  enabled: false
+  email: null  # your-email@example.com
+  sms: null    # your-phone-number

@@ -1,0 +1,65 @@
+# Default configuration — XAUUSDm broker spec confirmed 2026-09-16.
+# Commission is NOT shown in the specification screenshots; set it from
+# your broker's account/schedule page before running the pipeline.
+
+symbol:
+  name: XAUUSDm
+  digits: 3                              # Symbol specification -> Digits (3-digit quote)
+  point: 0.001                           # Symbol specification -> Point  (price moves in 0.001 steps)
+  # PipSize = 10 * point = 0.010  (3-digit rule: pip = 10x point)
+  # 2500 pips * 0.010 = $25.00 move — sane swing target for gold ✓
+  contract_size: 100                     # Symbol specification -> Contract size (100 XAU per lot)
+  typical_spread_points: 30             # Spread is FLOATING — replace with your observed average from Market Watch
+  commission_per_lot_roundturn: 0.0    # *** MUST SET: not visible in spec screenshots ***
+                                        # Find it in: MT5 -> Account -> Trade conditions, or ask your broker
+
+data:
+  timeframe: H1
+  start: "2024-01-01"
+  end: "2026-09-16"
+  source: csv                            # mt5 | csv | synthetic
+  # Raw MT5 export file (tab-separated, <DATE> <TIME> headers):
+  # data/raw/XAUUSDm_H1_202401012300_202609160600.csv
+  # The pipeline's get_ohlcv() / validate_ohlcv() expects the standard schema:
+  # time, open, high, low, close, volume  (lowercase, comma-separated, UTC)
+  # Run the prep script below ONCE to produce the clean file:
+  #   python -c "
+  #     import pandas as pd
+  #     df = pd.read_csv('data/raw/XAUUSDm_H1_202401012300_202609160600.csv', sep='\t')
+  #     df.columns = [c.strip('<>').lower() for c in df.columns]
+  #     df['time'] = pd.to_datetime(df['date'] + ' ' + df['time'])
+  #     df = df[['time','open','high','low','close','tickvol']].rename(columns={'tickvol':'volume'})
+  #     df.to_csv('data/raw/XAUUSDm_H1.csv', index=False)
+  #     print('Done:', len(df), 'bars')
+  #   "
+  csv_path: data/raw/XAUUSDm_H1.csv     # cleaned file (run prep script above first)
+
+strategy:
+  htf_pivot_len: 2
+  ltf_pivot_len: 1
+  tp_pips: 2500                          # 2500 * 0.010 = $25.00 on XAUUSDm (3-digit quote)
+  use_custom_swing_sl: true
+  sl_swing_timeframe: 4h
+  sl_swing_pivot_len: 2
+  sl_max_candidates: 20
+  sl_buffer_pips: 0
+  require_custom_swing_sl: false
+  one_position_at_a_time: true
+  fixed_lots: 0.10
+  max_hold_bars: 2000
+
+execution:
+  slippage_points: 5.0
+  both_hit_same_bar_policy: sl_first     # pessimistic; do not change for live
+  apply_commission: true
+
+training:
+  n_folds: 5
+  embargo_bars: 50
+  calibrate: true
+  model: HistGradientBoosting
+
+deployment:
+  min_tp_hit_rate: 0.05
+  min_trades: 300
+  min_folds_positive_ratio: 0.8

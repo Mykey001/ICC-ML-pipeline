@@ -1,0 +1,81 @@
+# Forward Test Configuration
+# Configure your MT5 connection, model, and trading parameters here.
+
+# ─── Model ───────────────────────────────────────────────────────────────────
+model:
+  # Directory containing .joblib model files (auto-discovers models)
+  directory: "model"
+  # Specific model file to use (if null, uses the first .joblib found)
+  file: "model_icc_meta.joblib"
+
+# ─── MT5 Connection ──────────────────────────────────────────────────────────
+# The system uses the already logged-in MT5 terminal.
+# If multiple accounts are logged in, select via the Streamlit dropdown or CLI --account flag.
+mt5:
+  symbol: XAUUSDm
+  timeframe: H1
+  buffer_size: 2000             # Historical bars to maintain for indicator warmup
+  magic_number: 202609          # Unique ID for orders placed by this system
+  slippage_deviation: 20        # Max slippage in broker points
+
+# ─── Symbol Specification (must match your broker!) ──────────────────────────
+symbol_spec:
+  name: XAUUSDm
+  digits: 3
+  point: 0.001
+  contract_size: 100.0
+  typical_spread_points: 30.0
+  commission_per_lot_roundturn: 0.0   # SET THIS from your broker's schedule!
+
+# ─── Strategy Parameters (must match training!) ─────────────────────────────
+strategy:
+  htf_pivot_len: 2
+  ltf_pivot_len: 1
+  tp_pips: 2500.0
+  use_custom_swing_sl: true
+  sl_swing_timeframe: "4h"
+  sl_swing_pivot_len: 2
+  sl_max_candidates: 20
+  sl_buffer_pips: 0.0
+  require_custom_swing_sl: false
+  one_position_at_a_time: true
+  fixed_lots: 0.10
+  max_hold_bars: 2000
+
+# ─── Risk Management ────────────────────────────────────────────────────────
+risk:
+  max_positions: 1
+  max_lot_size: 1.0
+  min_lot_size: 0.01
+  default_lot_size: 0.10
+
+  # Daily limits
+  max_daily_loss_usd: 500.0
+  max_daily_trades: 5
+
+  # Overall limits
+  max_drawdown_pct: 15.0
+
+  # Optional extra probability filter (beyond model threshold)
+  min_probability: null         # e.g., 0.60 for extra safety
+
+  # Risk-reward
+  min_risk_reward_ratio: 1.5
+
+# ─── Emergency Stop ─────────────────────────────────────────────────────────
+emergency:
+  max_consecutive_losses: 5
+  max_daily_loss_pct: 10.0
+  max_loss_in_minutes_usd: 500.0
+  max_loss_in_minutes_time: 60  # minutes
+
+# ─── Execution ───────────────────────────────────────────────────────────────
+execution:
+  dry_run: true                 # Set to false for real orders!
+  check_interval_seconds: 30    # How often to poll for new bars
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  level: INFO                   # DEBUG | INFO | WARNING | ERROR
+  log_dir: "forward_test/logs"
+  journal_dir: "forward_test/logs/journal"

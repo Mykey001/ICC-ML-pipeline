@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Runtime logs: contain the MT5 account number, balance and trade journal
+logs/
+*.log
+
+# Broker price data and trained models are not published
+data/
+model/
+models/
+*.joblib
+
+# Local backups
+*.orig
+
+# Streamlit secrets
+.streamlit/secrets.toml
