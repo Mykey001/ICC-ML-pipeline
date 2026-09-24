@@ -91,4 +91,11 @@ the model "holds up" if model-filtered holdout net pips ≥ unfiltered.
 
 ## Deviations
 
-(none yet)
+1. The first grid run was stopped before it finished (no results were viewed) and
+   restarted to also record trades per month, which walk-forward eligibility
+   needs. Search space and backtest were unchanged.
+2. An extra, exploratory random-timing benchmark was run on the current default
+   configuration after selection, for context. It played no part in selection.
+3. The holdout has **not** been evaluated. Both development criteria failed
+   (strategy: PBO and random-timing; meta-model: no positive walk-forward edge),
+   so the holdout is kept sealed for a future candidate that passes development.

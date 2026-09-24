@@ -1,0 +1,172 @@
+{
+  "chosen_config_id": 973,
+  "chosen_params": {
+    "htf_pivot_len": 3,
+    "ltf_pivot_len": 1,
+    "sl": "ltf",
+    "sl_buffer_pips": 0,
+    "tp_kind": "fixed",
+    "tp_mode": "fixed_pips",
+    "tp_pips": 4000.0,
+    "trend_filter": "none",
+    "max_sl_atr": 5.0
+  },
+  "chosen_label": "piv 3/1, SL ltf, TP 4000p, maxSL 5ATR",
+  "chosen_dev_stats": {
+    "n_trades": 465,
+    "net_pips": 97016.79999999035,
+    "win_rate": 0.2537634408602151,
+    "profit_factor": 1.2582141118586467,
+    "avg_pips": 208.63827956987174,
+    "max_drawdown_pips": 16718.4000000007,
+    "monthly_sharpe": 0.46743873213524906,
+    "months": 45,
+    "tp_rate": 0.2537634408602151,
+    "long_share": 0.556989247311828
+  },
+  "default_config_id": 6,
+  "default_dev_stats": {
+    "n_trades": 344.0,
+    "net_pips": 54024.99999999441,
+    "profit_factor": 1.118943041639408,
+    "monthly_sharpe": 0.1202833723859184,
+    "max_drawdown_pips": 55653.90000000102,
+    "win_rate": 0.5901162790697675
+  },
+  "top10": [
+    {
+      "config_id": 973,
+      "score": 0.46743873213524906,
+      "label": "piv 3/1, SL ltf, TP 4000p, maxSL 5ATR",
+      "n_trades": 465,
+      "net_pips": 97016.79999999035
+    },
+    {
+      "config_id": 1033,
+      "score": 0.46743873213524906,
+      "label": "piv 3/1, SL ltf, TP 4000p, buf 200, maxSL 5ATR",
+      "n_trades": 465,
+      "net_pips": 97016.79999999035
+    },
+    {
+      "config_id": 1977,
+      "score": 0.458316502130359,
+      "label": "piv 4/2, SL swing_d1, TP 8.0ATR, EMA200 trend",
+      "n_trades": 71,
+      "net_pips": 147005.7142857135
+    },
+    {
+      "config_id": 1118,
+      "score": 0.44940461206617555,
+      "label": "piv 3/2, SL swing_h4, TP 2.0R, maxSL 7ATR",
+      "n_trades": 124,
+      "net_pips": 171953.59999999797
+    },
+    {
+      "config_id": 2037,
+      "score": 0.4493676697374349,
+      "label": "piv 4/2, SL swing_d1, TP 8.0ATR, buf 200, EMA200 trend",
+      "n_trades": 72,
+      "net_pips": 146206.0142857135
+    },
+    {
+      "config_id": 1578,
+      "score": 0.44826966682600244,
+      "label": "piv 4/1, SL swing_d1, TP 0.75R",
+      "n_trades": 62,
+      "net_pips": 179451.97499999907
+    },
+    {
+      "config_id": 894,
+      "score": 0.4329658302555641,
+      "label": "piv 3/1, SL swing_d1, TP 8.0ATR",
+      "n_trades": 70,
+      "net_pips": 143261.21428571304
+    },
+    {
+      "config_id": 954,
+      "score": 0.43289411329314453,
+      "label": "piv 3/1, SL swing_d1, TP 8.0ATR, buf 200",
+      "n_trades": 70,
+      "net_pips": 143124.64285714168
+    },
+    {
+      "config_id": 1614,
+      "score": 0.431840988350403,
+      "label": "piv 4/1, SL swing_d1, TP 8.0ATR",
+      "n_trades": 66,
+      "net_pips": 133733.02857142733
+    },
+    {
+      "config_id": 1617,
+      "score": 0.4312103585022848,
+      "label": "piv 4/1, SL swing_d1, TP 8.0ATR, EMA200 trend",
+      "n_trades": 64,
+      "net_pips": 134875.9285714274
+    }
+  ],
+  "n_eligible": 1583,
+  "walk_forward": {
+    "process_oos_pips": 35356.49999999782,
+    "process_oos_monthly_sharpe": 0.1323233500674925,
+    "default_oos_pips": 49969.29999999567,
+    "default_oos_monthly_sharpe": 0.1402266637718476
+  },
+  "walk_forward_blocks": [
+    {
+      "test_block": "2023H1",
+      "selected_config": 186,
+      "selected_pips": 20124.699999999713,
+      "default_pips": -17437.500000000728
+    },
+    {
+      "test_block": "2023H2",
+      "selected_config": 186,
+      "selected_pips": -11773.100000000202,
+      "default_pips": 31840.699999999306
+    },
+    {
+      "test_block": "2024H1",
+      "selected_config": 186,
+      "selected_pips": 2785.9999999996435,
+      "default_pips": 6048.799999999321
+    },
+    {
+      "test_block": "2024H2",
+      "selected_config": 1513,
+      "selected_pips": 29817.69999999947,
+      "default_pips": -37357.800000000905
+    },
+    {
+      "test_block": "2025H1",
+      "selected_config": 1513,
+      "selected_pips": 11733.599999999433,
+      "default_pips": 54722.49999999908
+    },
+    {
+      "test_block": "2025H2",
+      "selected_config": 1453,
+      "selected_pips": -17332.400000000234,
+      "default_pips": 12152.599999999573
+    }
+  ],
+  "pbo": {
+    "pbo": 0.5428571428571428,
+    "n_splits": 70,
+    "median_logit": -0.14962932014038927
+  },
+  "random_timing": {
+    "strategy_pips": 97016.79999999035,
+    "random_mean_pips": 73948.97179999025,
+    "random_p95_pips": 157336.03999999055,
+    "p_value": 0.311,
+    "n_draws": 1000
+  },
+  "pass": {
+    "walk_forward_oos_pips_positive": true,
+    "walk_forward_oos_sharpe_positive": true,
+    "pbo_below_0.5": false,
+    "random_timing_p_below_0.05": false
+  },
+  "edge_on_development": false
+}
