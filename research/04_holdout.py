@@ -46,7 +46,7 @@ def main():
     cols = bundle["feature_cols"]
     model, threshold = bundle["model"], bundle["threshold"]
 
-    def model_filter(bar: int, direction: int) -> bool:
+    def model_filter(bar: int, direction: int, sl_price: float, atr: float) -> bool:
         if bar < start_bar:
             return True
         row = frame.loc[bar].copy()

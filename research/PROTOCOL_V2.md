@@ -74,4 +74,8 @@ pips.
 
 ## Deviations
 
-(none yet)
+1. Implementation detail, not a protocol change: `ea_backtest.run_sequential_backtest`'s
+   `take_signal` callback now also receives the signal's SL price and ATR, which the
+   expected-pips filter needs.
+2. Result: development criteria 1 and 3 failed (see RESULTS.md), so the holdout was
+   not evaluated.

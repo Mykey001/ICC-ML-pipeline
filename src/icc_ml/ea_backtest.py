@@ -23,7 +23,7 @@ def run_sequential_backtest(
     cfg: StrategyConfig,
     spec: SymbolSpec,
     exec_cfg: ExecutionConfig,
-    take_signal: Optional[Callable[[int, int], bool]] = None,
+    take_signal: Optional[Callable[[int, int, float, float], bool]] = None,
 ) -> pd.DataFrame:
     """
     Backtest what one account running the EA would have traded.
@@ -33,7 +33,8 @@ def run_sequential_backtest(
         cfg: Strategy configuration
         spec: Symbol specification
         exec_cfg: Execution configuration
-        take_signal: Optional filter(bar, direction) -> bool, e.g. the meta-model.
+        take_signal: Optional filter(bar, direction, sl_price, atr) -> bool, e.g. the
+            meta-model.
             A skipped signal opens no position (the state machine still resets,
             as it does when the EA sends no order).
 
@@ -46,7 +47,7 @@ def run_sequential_backtest(
     trades = []
 
     def on_signal(bar: int, direction: int, sl_price: float, atr: float) -> Optional[int]:
-        if take_signal is not None and not take_signal(bar, direction):
+        if take_signal is not None and not take_signal(bar, direction, sl_price, atr):
             return None
         trade = simulate_position(m, bar, direction, sl_price, atr, cfg, spec, exec_cfg)
         if trade is None:

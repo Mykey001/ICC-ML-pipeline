@@ -59,11 +59,36 @@ volatility regime. The pooled-OOS deployment threshold is 0.0 (do not filter).
 `models/model_icc_meta_v2.joblib` was saved as the protocol requires, but its
 threshold is 0.0 and it must not be deployed as a filter.
 
+## 3. Protocol v2: expected-value meta-model (default EA configuration)
+
+[PROTOCOL_V2.md](PROTOCOL_V2.md). 823 independent trades × 219 features (v1 set plus
+direction, SL distance in pips and in ATR). Base strategy mean R = 0.007 per trade
+after costs. One-account (sequential) walk-forward, 5 folds; filter active only on
+test-fold bars.
+
+| Rule | Fold pips | Total |
+|---|---|---|
+| Long-only (no model) | +13,212 / +6,421 / +8,230 / +38,796 / +63,356 | **+130,015** |
+| R-regressor (chosen) | −8,538 / +20,970 / +1,467 / +7,168 / +42,809 | +63,876 |
+| Take all | −14,308 / +23,432 / −22,347 / +547 / +59,866 | +47,190 |
+| EV-classifier | +6,415 / −15,095 / −22,347 / +547 / −7,466 | −37,946 |
+
+| Criterion | Result | Pass |
+|---|---|---|
+| Beats take-all and long-only | +16,687 vs take-all, −66,138 vs long-only | **no** |
+| Edge over take-all in ≥ 3 of 5 folds | 3 / 5 | yes |
+| Permutation test (20 label shuffles) | p = 0.095 | **no** |
+
+Deployment threshold from pooled OOS: take all. **No edge**; the holdout remains
+sealed. Skipping shorts beats every model, consistent with v1: in 2022–2025 the
+return came from being long gold, not from ICC signal quality or trade selection.
+
 ## Reproduce
 
 ```bash
 python research/01_grid_search.py        # ~12 min on 4 cores
 python research/02_select_strategy.py
 python research/03_train_meta_model.py
+python research/05_ev_meta_model.py    # protocol v2, ~35 min on 4 cores
 # research/04_holdout.py - single use; only for a candidate that passes development
 ```
