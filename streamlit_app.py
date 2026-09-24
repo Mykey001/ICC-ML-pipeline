@@ -32,7 +32,9 @@ from icc_ml.strategy_icc import generate_icc_signals
 from icc_ml.icc_labeling import (simulate_icc_trades, diagnose_trades,
                                    attach_features_to_trades)
 from icc_ml.train import (get_feature_columns, train_walk_forward, summarize_folds,
-                           fit_final_model, build_model)
+                           fit_final_model, build_model, select_deployment_threshold)
+from icc_ml.regime import (compute_regimes, attach_regimes_to_trades, regime_profile,
+                            regime_oos_report)
 from icc_ml.backtest import (compare_model_vs_baseline, sequential_backtest,
                               performance_metrics, live_parity_checks)
 from icc_ml.validation import compute_ic, rolling_ic_stability, redundancy_clusters
@@ -290,6 +292,8 @@ with tabs[3]:
             with st.spinner("Simulating trades..."):
                 tr = simulate_icc_trades(S.df, S.signals, S.cfg, S.spec, S.execc,
                                           enforce_one_position=False)
+                if len(tr):
+                    tr = attach_regimes_to_trades(tr, compute_regimes(S.df))
                 S.trades = tr
                 joined = attach_features_to_trades(tr, S.features).dropna(subset=["win"])
                 cols = get_feature_columns(joined)
@@ -319,6 +323,20 @@ with tabs[3]:
                             f"{len(S.feature_cols)} features")
                     st.caption(f"Baseline win rate to beat: **{d['win_rate']:.1%}**")
                     st.bar_chart(S.trades["exit_reason"].value_counts())
+
+                if "regime" in S.trades.columns:
+                    st.subheader("Behaviour by market regime")
+                    st.caption("Regime at the signal bar, from data up to that bar only. "
+                                "Trend: ADX(14) ≥ 25 → up/down by DI sign, else range. "
+                                "Volatility: ATR(14) percentile in its trailing 1500 bars "
+                                "(low < ⅓ < normal < ⅔ < high). Alignment: +1 with the trend, "
+                                "−1 against it, 0 in a range. Rows with reliable = False have "
+                                "too few trades to trust.")
+                    view = st.radio("Group by", ["regime", "regime_trend", "regime_vol",
+                                                 "regime_alignment"], horizontal=True,
+                                    key="label_regime_view")
+                    st.dataframe(regime_profile(S.trades, by=view, pip=S.spec.pip),
+                                 width="stretch", hide_index=True)
 
 
 # ===========================================================================
@@ -371,6 +389,20 @@ with tabs[4]:
 
             st.dataframe(pd.DataFrame(s["per_fold"]), use_container_width=True,
                           hide_index=True)
+            st.caption("Each fold's threshold is chosen on out-of-sample predictions from "
+                        "an inner walk-forward over that fold's training trades. "
+                        "take_all_fallback / threshold 0 means the model found no filter "
+                        "that beat taking every signal.")
+
+            if S.oos is not None and "regime" in S.oos.columns:
+                st.subheader("Out-of-sample results by regime")
+                st.caption("edge_pips < 0 means the model's filter lost money versus taking "
+                            "every signal in that regime.")
+                view = st.radio("Group by", ["regime", "regime_trend", "regime_vol",
+                                             "regime_alignment"], horizontal=True,
+                                key="oos_regime_view")
+                st.dataframe(regime_oos_report(S.oos, by=view), width="stretch",
+                             hide_index=True)
         elif S.summary:
             st.error(S.summary["error"])
 
@@ -526,13 +558,17 @@ with tabs[7]:
 
         st.divider()
         thr = st.number_input("Deployment threshold", 0.0, 1.0,
-                               float(np.mean([r.threshold for r in S.fold_results]))
-                               if S.fold_results else 0.5, step=0.01)
+                               float(select_deployment_threshold(S.oos))
+                               if S.oos is not None else 0.5, step=0.01,
+                               help="Default: the threshold that maximises net pips on the "
+                                    "pooled walk-forward out-of-sample predictions. "
+                                    "0 = take every signal (no filter beat the baseline).")
         name = st.text_input("Model filename", "model_icc_meta.joblib")
         if st.button("Fit final model on all data & save", type="primary"):
             path = ROOT / "models" / name
             path.parent.mkdir(exist_ok=True)
-            b = fit_final_model(S.joined, S.feature_cols, float(thr), out_path=str(path))
+            b = fit_final_model(S.joined, S.feature_cols, float(thr), out_path=str(path),
+                                pip=S.spec.pip)
             st.success(f"Saved {path}  ({b['n_training_trades']} trades, "
                         f"{len(b['feature_cols'])} features)")
 

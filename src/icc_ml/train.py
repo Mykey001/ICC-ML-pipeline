@@ -6,7 +6,8 @@ Key features:
 - Purging: remove training trades that exit after test start
 - Embargo: additional buffer to prevent serial correlation leakage
 - Probability calibration (isotonic regression)
-- Threshold selection on expected pips, not accuracy
+- Threshold selection on expected pips, not accuracy, using out-of-sample
+  predictions from an inner walk-forward inside each training window
 """
 
 from __future__ import annotations
@@ -21,6 +22,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import roc_auc_score, brier_score_loss
 import joblib
+
+from .regime import REGIME_LABEL_COLS, RegimeConfig, regime_config_dict, regime_profile
+
+# Threshold meaning "take every signal" (the model does not filter)
+TAKE_ALL_THRESHOLD = 0.0
+
+# Minimum inner out-of-sample predictions needed to choose a threshold
+MIN_THRESHOLD_SAMPLES = 50
 
 
 @dataclass
@@ -37,13 +46,15 @@ class FoldResult:
     edge_pips: float
     n_taken: int
     win_rate_if_taken: float
+    threshold_source: str = "inner_oos"  # or "take_all_fallback"
+    n_threshold_samples: int = 0
 
 
 def get_feature_columns(df: pd.DataFrame) -> List[str]:
     """
     Extract feature column names from training DataFrame.
-    
-    Excludes trade metadata columns, keeps only actual features.
+
+    Excludes trade metadata columns and text regime labels, keeps only numeric features.
     """
     exclude = {
         "signal_bar", "direction", "entry_bar", "entry_price",
@@ -51,9 +62,68 @@ def get_feature_columns(df: pd.DataFrame) -> List[str]:
         "exit_reason", "gross_pips", "spread_cost_pips",
         "slippage_cost_pips", "commission_pips", "net_pips", "win",
         "time",
-    }
-    
-    return [col for col in df.columns if col not in exclude]
+    } | set(REGIME_LABEL_COLS)
+
+    return [col for col in df.columns
+            if col not in exclude and pd.api.types.is_numeric_dtype(df[col])]
+
+
+def _walk_forward_splits(df: pd.DataFrame, n_folds: int, embargo_bars: int):
+    """
+    Yield (fold_num, train_idx, test_idx) for purged expanding-window walk-forward.
+
+    Rows (sorted by signal_bar) are split into n_folds + 1 contiguous blocks. The
+    first block only ever trains; each later block is one test fold. Training rows
+    are purged unless their trade exits more than embargo_bars before the test
+    fold's first signal.
+    """
+    blocks = np.array_split(np.arange(len(df)), n_folds + 1)
+    for fold, test_idx in enumerate(blocks[1:], start=1):
+        if len(test_idx) == 0:
+            continue
+        test_start = test_idx[0]
+        purge_boundary = df.loc[test_start, "signal_bar"] - embargo_bars
+        train_mask = (df.index < test_start) & (df["exit_bar"] < purge_boundary)
+        yield fold, df.index[train_mask].to_numpy(), test_idx
+
+
+def _fit_model(X: pd.DataFrame, y: pd.Series, model_type: str, calibrate: bool, cv: int = 3):
+    """
+    Build and fit one model, calibrated when requested and there is enough data
+    (at least 100 rows and `cv` examples of each class, which calibration CV needs).
+    """
+    model = build_model(model_type)
+    if calibrate and len(X) >= 100 and y.value_counts().min() >= cv:
+        model = CalibratedClassifierCV(model, method="isotonic", cv=cv)
+    model.fit(X, y)
+    return model
+
+
+def _inner_oos_predictions(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    n_inner: int,
+    embargo_bars: int,
+    calibrate: bool,
+    model_type: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Out-of-sample predictions inside a training window, via a nested walk-forward.
+
+    Returns (y_true, y_proba, net_pips) over all inner test rows.
+    """
+    df = df.reset_index(drop=True)
+    ys, ps, pips = [], [], []
+    for _, tr, te in _walk_forward_splits(df, n_inner, embargo_bars):
+        if len(tr) < 30 or df.loc[tr, "win"].nunique() < 2:
+            continue
+        model = _fit_model(df.loc[tr, feature_cols], df.loc[tr, "win"], model_type, calibrate)
+        ys.append(df.loc[te, "win"].to_numpy())
+        ps.append(model.predict_proba(df.loc[te, feature_cols])[:, 1])
+        pips.append(df.loc[te, "net_pips"].to_numpy())
+    if not ys:
+        return np.array([]), np.array([]), np.array([])
+    return np.concatenate(ys), np.concatenate(ps), np.concatenate(pips)
 
 
 def train_walk_forward(
@@ -63,18 +133,24 @@ def train_walk_forward(
     embargo_bars: int = 50,
     calibrate: bool = True,
     model_type: str = "HistGradientBoosting",
+    n_inner_folds: int = 3,
 ) -> Tuple[List[FoldResult], pd.DataFrame]:
     """
     Train using purged expanding-window walk-forward CV.
-    
+
+    Each fold's threshold is chosen on out-of-sample predictions from an inner
+    walk-forward over that fold's training rows only, never on in-sample
+    predictions and never on the test fold.
+
     Args:
         df: Training matrix (trades + features + labels)
         feature_cols: List of feature column names
-        n_folds: Number of walk-forward folds
+        n_folds: Number of test folds (data is split into n_folds + 1 blocks)
         embargo_bars: Embargo period (bars) after train/test boundary
         calibrate: Whether to calibrate probabilities
         model_type: Model to use
-    
+        n_inner_folds: Inner walk-forward folds used for threshold selection
+
     Returns:
         (fold_results, oos_predictions)
         - fold_results: List of FoldResult objects
@@ -93,76 +169,56 @@ def train_walk_forward(
     df = df.sort_values("signal_bar").reset_index(drop=True)
     
     n = len(df)
-    fold_size = n // n_folds
-    
+    fold_size = n // (n_folds + 1)
+
     if fold_size < 50:
         warnings.warn(
             f"Fold size {fold_size} is very small. Results may be unreliable. "
             f"Consider reducing n_folds or extending history.",
             UserWarning
         )
-    
+
+    carry_cols = [c for c in REGIME_LABEL_COLS + ["regime_alignment"] if c in df.columns]
     fold_results = []
     oos_predictions = []
-    
-    for fold in range(n_folds):
-        # Test window for this fold
-        test_start_idx = (fold + 1) * fold_size
-        if fold == n_folds - 1:
-            test_end_idx = n  # Last fold takes remainder
-        else:
-            test_end_idx = (fold + 2) * fold_size
-        
-        if test_start_idx >= n:
-            break
-        
-        test_indices = range(test_start_idx, min(test_end_idx, n))
-        test_start_bar = df.loc[test_start_idx, "signal_bar"]
-        
-        # Train: all data before test window
-        # Apply purging: remove trades that exit after (test_start_bar - embargo_bars)
-        purge_boundary = test_start_bar - embargo_bars
-        train_mask = (df.index < test_start_idx) & (df["exit_bar"] < purge_boundary)
-        train_indices = df[train_mask].index.tolist()
-        
+
+    for fold, train_indices, test_indices in _walk_forward_splits(df, n_folds, embargo_bars):
         if len(train_indices) < 30:
             warnings.warn(
-                f"Fold {fold+1}: Only {len(train_indices)} training samples after purging. "
+                f"Fold {fold}: Only {len(train_indices)} training samples after purging. "
                 f"Skipping fold.",
                 UserWarning
             )
             continue
-        
+
         # Extract train/test sets
         X_train = df.loc[train_indices, feature_cols]
         y_train = df.loc[train_indices, "win"]
-        pips_train = df.loc[train_indices, "net_pips"]
-        
+
         X_test = df.loc[test_indices, feature_cols]
         y_test = df.loc[test_indices, "win"]
         pips_test = df.loc[test_indices, "net_pips"]
-        
-        # Build and train model
-        model = build_model(model_type)
-        
-        # Calibrate if requested and enough samples
-        if calibrate and len(train_indices) >= 100:
-            model = CalibratedClassifierCV(model, method="isotonic", cv=3)
-        
-        model.fit(X_train, y_train)
-        
+
+        model = _fit_model(X_train, y_train, model_type, calibrate)
+
         # Predict on test set
         y_pred_proba = model.predict_proba(X_test)[:, 1]
-        
-        # Metrics
-        auc = roc_auc_score(y_test, y_pred_proba)
+
+        # Metrics (AUC is undefined when the test fold has a single class)
+        auc = roc_auc_score(y_test, y_pred_proba) if y_test.nunique() == 2 else np.nan
         brier = brier_score_loss(y_test, y_pred_proba)
-        
-        # Select threshold on TRAINING set (to prevent leakage)
-        threshold = select_threshold_on_pips(
-            y_train, model.predict_proba(X_train)[:, 1], pips_train
+
+        # Select threshold on inner out-of-sample predictions from the training rows
+        inner_y, inner_p, inner_pips = _inner_oos_predictions(
+            df.loc[train_indices], feature_cols, n_inner_folds, embargo_bars, calibrate, model_type
         )
-        
+        if len(inner_y) >= MIN_THRESHOLD_SAMPLES:
+            threshold = select_threshold_on_pips(inner_y, inner_p, inner_pips)
+            threshold_source = "inner_oos"
+        else:
+            threshold = TAKE_ALL_THRESHOLD
+            threshold_source = "take_all_fallback"
+
         # Apply threshold to test set
         y_pred = (y_pred_proba >= threshold).astype(int)
         
@@ -179,7 +235,7 @@ def train_walk_forward(
         
         # Store fold result
         fold_results.append(FoldResult(
-            fold_num=fold + 1,
+            fold_num=fold,
             train_size=len(train_indices),
             test_size=len(test_indices),
             auc=auc,
@@ -190,19 +246,24 @@ def train_walk_forward(
             edge_pips=edge_pips,
             n_taken=n_taken,
             win_rate_if_taken=win_rate_if_taken,
+            threshold_source=threshold_source,
+            n_threshold_samples=len(inner_y),
         ))
-        
+
         # Store OOS predictions
         for idx, test_idx in enumerate(test_indices):
-            oos_predictions.append({
+            row = {
                 "signal_bar": df.loc[test_idx, "signal_bar"],
-                "fold": fold + 1,
+                "fold": fold,
                 "y_true": y_test.iloc[idx],
                 "y_pred_proba": y_pred_proba[idx],
                 "y_pred": y_pred[idx],
                 "net_pips": pips_test.iloc[idx],
                 "direction": df.loc[test_idx, "direction"],
-            })
+            }
+            for c in carry_cols:
+                row[c] = df.loc[test_idx, c]
+            oos_predictions.append(row)
     
     oos_df = pd.DataFrame(oos_predictions)
     
@@ -282,21 +343,24 @@ def select_threshold_on_pips(
     Select probability threshold that maximizes net pips.
     
     Sweeps thresholds from 0.1 to 0.9 and picks the one with highest
-    total pips, subject to minimum trade count constraint.
-    
+    total pips, subject to minimum trade count constraint. Only predictions the
+    model was not trained on should be passed in.
+
     Args:
         y_true: True labels
         y_proba: Predicted probabilities
         pips: Net pips per trade
         min_trades: Minimum trades required for threshold to be valid
-    
+
     Returns:
-        Optimal threshold
+        Optimal threshold, or TAKE_ALL_THRESHOLD if no threshold beats taking every signal
     """
+    y_proba = np.asarray(y_proba)
+    pips = np.asarray(pips)
     thresholds = np.arange(0.1, 0.91, 0.05)
-    best_threshold = 0.5
+    best_threshold = TAKE_ALL_THRESHOLD
     best_pips = pips.sum()  # Baseline (take all)
-    
+
     for thresh in thresholds:
         mask = y_proba >= thresh
         if mask.sum() < min_trades:
@@ -326,8 +390,8 @@ def summarize_folds(fold_results: List[FoldResult]) -> dict:
     
     return {
         "n_folds": len(fold_results),
-        "mean_auc": np.mean(aucs),
-        "std_auc": np.std(aucs),
+        "mean_auc": np.nanmean(aucs),
+        "std_auc": np.nanstd(aucs),
         "mean_brier": np.mean(briers),
         "total_edge_pips": sum(edges),
         "mean_edge_per_fold": np.mean(edges),
@@ -335,8 +399,12 @@ def summarize_folds(fold_results: List[FoldResult]) -> dict:
         "per_fold": [
             {
                 "fold": f.fold_num,
+                "n_train": f.train_size,
+                "n_test": f.test_size,
                 "auc": f.auc,
                 "brier": f.brier,
+                "threshold": f.threshold,
+                "threshold_source": f.threshold_source,
                 "edge_pips": f.edge_pips,
                 "n_taken": f.n_taken,
                 "win_rate": f.win_rate_if_taken,
@@ -346,6 +414,19 @@ def summarize_folds(fold_results: List[FoldResult]) -> dict:
     }
 
 
+def select_deployment_threshold(oos: pd.DataFrame, min_trades: int = 30) -> float:
+    """
+    Threshold for the final model, chosen on the pooled walk-forward OOS predictions.
+
+    Every prediction used comes from a model that never saw that trade. The
+    walk-forward edge figures do not use this threshold, so they stay unbiased.
+    Returns TAKE_ALL_THRESHOLD if no threshold beats taking every signal.
+    """
+    if len(oos) == 0:
+        return TAKE_ALL_THRESHOLD
+    return select_threshold_on_pips(oos["y_true"], oos["y_pred_proba"], oos["net_pips"], min_trades)
+
+
 def fit_final_model(
     df: pd.DataFrame,
     feature_cols: List[str],
@@ -353,12 +434,19 @@ def fit_final_model(
     model_type: str = "HistGradientBoosting",
     calibrate: bool = True,
     out_path: Optional[str] = None,
+    pip: Optional[float] = None,
+    regime_cfg: Optional[RegimeConfig] = None,
 ) -> dict:
     """
     Fit final model on ALL available data for deployment.
-    
-    Use the threshold from walk-forward CV (don't recompute on full data).
-    
+
+    Use the threshold from walk-forward CV (see select_deployment_threshold);
+    don't recompute it on the model's own training data.
+
+    If the training matrix carries regime labels, the bundle also stores the
+    per-regime profile and regime configuration so live decisions can report
+    the current regime and its historical behaviour.
+
     Args:
         df: Full training matrix
         feature_cols: Feature column names
@@ -366,20 +454,14 @@ def fit_final_model(
         model_type: Model type
         calibrate: Whether to calibrate
         out_path: Path to save model (optional)
-    
+        pip: Pip size, for the regime profile's SL distance column
+        regime_cfg: Regime configuration used to build the regime columns
+
     Returns:
         Dict with model bundle metadata
     """
-    X = df[feature_cols]
-    y = df["win"]
-    
-    model = build_model(model_type)
-    
-    if calibrate and len(df) >= 100:
-        model = CalibratedClassifierCV(model, method="isotonic", cv=5)
-    
-    model.fit(X, y)
-    
+    model = _fit_model(df[feature_cols], df["win"], model_type, calibrate, cv=5)
+
     bundle = {
         "model": model,
         "feature_cols": feature_cols,
@@ -387,7 +469,11 @@ def fit_final_model(
         "n_training_trades": len(df),
         "model_type": model_type,
     }
-    
+
+    if "regime" in df.columns:
+        bundle["regime_config"] = regime_config_dict(regime_cfg or RegimeConfig())
+        bundle["regime_profile"] = regime_profile(df, pip=pip)
+
     if out_path is not None:
         joblib.dump(bundle, out_path)
         print(f"Model saved to {out_path}")

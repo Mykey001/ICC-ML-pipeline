@@ -330,9 +330,10 @@ def add_price_action_raw(df: pd.DataFrame) -> pd.DataFrame:
 def add_liquidity_smc_raw(df: pd.DataFrame) -> pd.DataFrame:
     """Category 9: Liquidity concepts (FVG, equal highs/lows, sweeps)."""
     
-    # Fair Value Gaps (3-candle imbalance)
-    bull_fvg = df["low"].shift(-1) > df["high"].shift(1)
-    bear_fvg = df["high"].shift(-1) < df["low"].shift(1)
+    # Fair Value Gaps (3-candle imbalance), flagged on the candle that completes the
+    # pattern so only closed bars are used
+    bull_fvg = df["low"] > df["high"].shift(2)
+    bear_fvg = df["high"] < df["low"].shift(2)
     df["fvg_bull"] = bull_fvg.astype(int)
     df["fvg_bear"] = bear_fvg.astype(int)
     
@@ -352,10 +353,14 @@ def add_liquidity_smc_raw(df: pd.DataFrame) -> pd.DataFrame:
     df["sweep_high"] = sweep_high.astype(int)
     df["sweep_low"] = sweep_low.astype(int)
     
-    # Previous day high/low (for intraday data)
+    # Previous day high/low (for intraday data): the prior trading day in the data,
+    # never the current day's still-forming range
     if "time" in df.columns:
-        df["pdh"] = df.groupby(df["time"].dt.date)["high"].transform("max").shift(1)
-        df["pdl"] = df.groupby(df["time"].dt.date)["low"].transform("min").shift(1)
+        day = df["time"].dt.normalize()
+        prev_high = df["high"].groupby(day).max().shift(1)
+        prev_low = df["low"].groupby(day).min().shift(1)
+        df["pdh"] = day.map(prev_high).to_numpy()
+        df["pdl"] = day.map(prev_low).to_numpy()
     
     return df
 

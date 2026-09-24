@@ -16,6 +16,39 @@ from .indicators import compute_all_indicators
 from .features import build_all_features
 from .strategy_icc import generate_icc_signals
 from .train import load_model
+from .regime import (REGIME_FEATURE_COLS, RegimeConfig, compute_regimes,
+                     describe_expectation, regime_alignment)
+
+
+def _features_with_regimes(df: pd.DataFrame, model_bundle: dict) -> tuple:
+    """
+    Compute features plus regime columns exactly as they were built for training.
+
+    Returns (feature_frame, regimes). Regimes use the configuration stored in the
+    bundle (defaults for bundles saved before regimes existed).
+    """
+    df = df.reset_index(drop=True)
+    features = build_all_features(compute_all_indicators(df))
+    regime_cfg = RegimeConfig(**model_bundle["regime_config"]) if "regime_config" in model_bundle else RegimeConfig()
+    regimes = compute_regimes(df, regime_cfg)
+    frame = features.join(regimes[["regime_vol_rank", "regime_vol_code", "regime_trend_code"]])
+    return frame, regimes
+
+
+def _feature_row(frame: pd.DataFrame, regimes: pd.DataFrame, idx: int, direction: int, feature_cols) -> np.ndarray:
+    """One bar's model input, including the trade-specific regime alignment."""
+    row = frame.loc[idx].copy()
+    row["regime_alignment"] = regime_alignment(direction, regimes.loc[idx, "regime_trend_code"])
+    return row[feature_cols].to_numpy(dtype=float).reshape(1, -1)
+
+
+def _regime_info(model_bundle: dict, regimes: pd.DataFrame, idx: int) -> dict:
+    """Current regime and what training data says to expect in it."""
+    regime = regimes.loc[idx, "regime"]
+    return {
+        "regime": regime,
+        "regime_expectation": describe_expectation(model_bundle.get("regime_profile"), regime),
+    }
 
 
 def score_latest_signal(
@@ -48,37 +81,37 @@ def score_latest_signal(
             "probability": float (model's win probability),
             "decision": "TAKE" or "SKIP",
             "timestamp": datetime,
+            "regime": str (e.g. "up|high"),
+            "regime_expectation": dict (training statistics for that regime),
         }
     """
     # Validate model bundle
     if "model" not in model_bundle or "feature_cols" not in model_bundle:
         raise ValueError("Invalid model bundle. Must contain 'model' and 'feature_cols'.")
-    
+
     model = model_bundle["model"]
     feature_cols = model_bundle["feature_cols"]
     threshold = model_bundle.get("threshold", 0.5)
-    
-    # Compute indicators and features
-    df_with_indicators = compute_all_indicators(df)
-    df_with_features = build_all_features(df_with_indicators)
-    
+    df = df.reset_index(drop=True)
+
     # Generate ICC signals
     signals = generate_icc_signals(df, cfg, spec)
-    
+
     # Check if the LAST bar has a signal
     last_idx = len(df) - 1
     if signals.loc[last_idx, "signal"] == 0:
         return None  # No signal on last bar
-    
+
     # Extract signal details
     signal_row = signals.loc[last_idx]
     direction = int(signal_row["signal"])
     sl_price = signal_row["sl_price"]
     tp_price = signal_row["tp_price"]
-    
-    # Extract features for this signal
+
+    # Compute features (with regime columns) and extract this signal's row
+    frame, regimes = _features_with_regimes(df, model_bundle)
     try:
-        features = df_with_features.loc[last_idx, feature_cols].values.reshape(1, -1)
+        features = _feature_row(frame, regimes, last_idx, direction, feature_cols)
     except KeyError as e:
         raise ValueError(f"Feature columns mismatch. Missing: {e}")
     
@@ -105,6 +138,7 @@ def score_latest_signal(
         "decision": decision,
         "threshold": threshold,
         "timestamp": df.loc[last_idx, "time"] if "time" in df.columns else None,
+        **_regime_info(model_bundle, regimes, last_idx),
     }
 
 
@@ -134,11 +168,11 @@ def batch_score_signals(
     model = model_bundle["model"]
     feature_cols = model_bundle["feature_cols"]
     threshold = model_bundle.get("threshold", 0.5)
-    
-    # Compute features
-    df_with_indicators = compute_all_indicators(df)
-    df_with_features = build_all_features(df_with_indicators)
-    
+    df = df.reset_index(drop=True)
+
+    # Compute features (with regime columns)
+    frame, regimes = _features_with_regimes(df, model_bundle)
+
     # Generate signals
     signals = generate_icc_signals(df, cfg, spec)
     
@@ -158,7 +192,7 @@ def batch_score_signals(
         
         # Extract features
         try:
-            features = df_with_features.loc[idx, feature_cols].values.reshape(1, -1)
+            features = _feature_row(frame, regimes, idx, int(signal_row["signal"]), feature_cols)
         except KeyError:
             warnings.warn(f"Feature mismatch at bar {idx}. Skipping.", UserWarning)
             continue
@@ -178,8 +212,9 @@ def batch_score_signals(
             "tp_price": signal_row["tp_price"],
             "probability": float(probability),
             "decision": decision,
+            "regime": regimes.loc[idx, "regime"],
         })
-    
+
     return pd.DataFrame(results)
 
 
@@ -255,23 +290,25 @@ def live_trading_checklist(
     try:
         model = model_bundle["model"]
         feature_cols = model_bundle["feature_cols"]
-        
-        # Try to extract features for last bar
-        features = df_feat.loc[len(df)-1, feature_cols].values.reshape(1, -1)
-        
+
+        # Try to extract features for last bar (as a hypothetical long signal)
+        frame, regimes = _features_with_regimes(df, model_bundle)
+        features = _feature_row(frame, regimes, len(df) - 1, 1, feature_cols)
+
         # Try to predict
         proba = model.predict_proba(features)[0, 1]
-        
+
         checks["model_can_score"] = True
         checks["test_probability"] = float(proba)
+        checks["current_regime"] = regimes.loc[len(df) - 1, "regime"]
     except Exception as e:
         checks["model_can_score"] = False
         checks["model_error"] = str(e)
-    
+
     # 6. Feature columns match
     try:
         model_features = set(model_bundle["feature_cols"])
-        available_features = set(df_feat.columns)
+        available_features = set(df_feat.columns) | set(REGIME_FEATURE_COLS)
         missing = model_features - available_features
         
         if len(missing) == 0:
@@ -319,8 +356,18 @@ def format_trading_decision(decision: dict) -> str:
     direction_str = "LONG" if decision["direction"] == 1 else "SHORT"
     timestamp_str = decision["timestamp"].strftime("%Y-%m-%d %H:%M") if decision["timestamp"] else "N/A"
     
+    regime_str = ""
+    if decision.get("regime") is not None:
+        exp = decision.get("regime_expectation") or {}
+        if "win_rate" in exp:
+            regime_str = (f" | Regime: {decision['regime']} (training win rate {exp['win_rate']:.1%}, "
+                          f"n={int(exp['n_trades'])}{'' if exp.get('reliable', True) else ', unreliable'})")
+        else:
+            regime_str = f" | Regime: {decision['regime']} ({exp.get('note', 'no profile')})"
+
     return (
         f"[{timestamp_str}] {decision['decision']}: {direction_str} @ bar {decision['signal_bar']} | "
         f"Probability: {decision['probability']:.3f} (threshold: {decision['threshold']:.3f}) | "
         f"SL: {decision['sl_price']:.5f}, TP: {decision['tp_price']:.5f}"
+        f"{regime_str}"
     )
